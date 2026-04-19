@@ -1,2 +1,18 @@
 # Penalty-Killing-Efficiency-Metric
-This repo contains my creation of an original Penalty Kill Efficiency Metric (PKEM) to evaluate player contributions in short-handed situations. 
+This project entails my creation of an original Penalty Kill Efficiency Metric (PKEM) to evaluate player contributions in short-handed situations. I gathered data from 17 NHL seasons, both regular season and playoffs, for each individual player and their advanced stats(from Moneypuck) and created a single, all-encompassing metric to evaluate how good the player is at killing penalties, their contributions to team penalty-killing, and their impact when on the ice. Traditional measures of blocks, shots against, and goals against are helpful, but digging deeper into penalty killing does not have its own metric. I also examined team-level numbers to discover a link between penalty killing success(determined by an average of the players' PKEM) and wins.
+
+Methodology-
+1. Feature Engineering
+   - Time on ice (shorthanded)
+   - Blocks, faceoff %, goals against
+   - Context features (score, manpower, game situation)
+
+2. Player Profiling
+   - Aggregated event-level data into player-level penalty-kill profiles
+
+3. Modeling
+   - Built classification trees to identify drivers of successful penalty-kill units
+
+4. Metric Construction
+   - Combined features into PKEM using weighted contributions
+   - Adjusted for usage and context
