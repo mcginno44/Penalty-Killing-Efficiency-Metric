@@ -12,7 +12,7 @@ Methodology-
    - Aggregated event-level data into player-level penalty-kill profiles
 
 3. Modeling
-   - Built classification trees to identify drivers of successful penalty-kill units
+   - Built classification trees to identify drivers of Stanley Cup-winning teams
 
 4. Metric Construction
    - Combined features into PKEM using weighted contributions
