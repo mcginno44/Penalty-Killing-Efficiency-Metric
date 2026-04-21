@@ -1,0 +1,425 @@
+---
+title: "Nhl data analysis"
+author: "Owen McGinnis"
+date: "2025-02-25"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rvest)
+library(data.table)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+```
+
+## QuantHockey Web Scraping and Data Cleaning
+```{r}
+# Regular season
+years2 = 1997:2023
+years2 = years2[years2 != "2004"] # removing the 2004-05 season(lockout)
+full_years = rep(NA, length(years2))
+for(i in 1:length(years2)){
+  full_years[i] = paste0(years2[i], "-" , substr((years2[i]+1),3,4))
+}
+full_years1 = as.character(full_years)
+
+forwards = rep(NA,length(years2))
+forwards_df = list()
+df_list = list()
+
+for(i in 1:length(years2)){
+  link = paste0("https://www.quanthockey.com/nhl/seasons/",full_years1[i],"-nhl-forwards-playoff-stats.html")
+  url = read_html(link) # scraping the html table items
+  
+  forwards = url |>
+    html_elements("table") |>
+    html_table(header = FALSE)
+  
+  forwards_df = rbindlist(forwards)
+  forwards_df = forwards_df |>
+    mutate(season = full_years1[i])
+  forwards_df = forwards_df[-c(1,2),]
+  df_list[[i]] = forwards_df  
+}
+final_df = rbindlist(df_list)
+cut_df = final_df |>
+  select(X3,X4, X7,X13,X16,X29,X49,X50,X51,season)
+colnames(cut_df) = c("Name", "team", "games_played", "TOI", "SHTOI", "SH_pts", "FOW", "FOL", "FOPer", "Season")
+cut_df = cut_df |>
+  mutate(games = as.integer(games_played), sh_pts = as.integer(SH_pts), FOWin = as.integer(FOW), FOLoss = as.integer(FOL), FOPercent = as.double(substr(FOPer,1,5)), season_ID = as.integer(substr(Season,1,4))) |>
+  mutate(toi = as.integer(sub(":.*", "", TOI)) * 60 + as.integer(sub(".*:", "", TOI))) |> # time on ice variable creation(as total seconds)
+  mutate(shtoi = as.integer(sub(":.*", "", SHTOI)) * 60 + as.integer(sub(".*:", "", SHTOI))) |> # shorthanded time on ice
+  mutate(seasonID = as.integer(season_ID + 1)) |>
+  mutate(sh_percent = as.double(shtoi/toi)) |> # percentage of shorthanded time on ice
+  select(Name, team, games, toi,shtoi, sh_pts, FOWin, FOLoss, FOPercent, seasonID, sh_percent)
+```
+
+## MoneyPuck Data Sets, Creation and Cleaning
+```{r}
+years = as.character(2009:2023)
+yoffs_list = list()
+yoffs_df = list()
+for(i in 1:length(years)){
+  yoff_name = paste("yoffs", years[i], sep="")
+  yoffs = get(yoff_name)
+  yoffs_list[i] = yoffs |>
+  filter(situation == "4on5")  |>
+  filter(position != "D") |>
+  select(c(season, name,icetime,faceoffsWon, faceoffsLost, I_F_shifts,I_F_oZoneShiftStarts, I_F_dZoneShiftStarts,I_F_neutralZoneShiftStarts,I_F_flyShiftStarts)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+  filter(icetime != 0) 
+}
+```
+
+
+```{r}
+# Playoffs Loading and Cleaning
+the_list = list(yoffs2009,yoffs2010, yoffs2011, yoffs2012, yoffs2013, yoffs2014, yoffs2015, yoffs2016, yoffs2017, yoffs2018, yoffs2019, yoffs2020, yoffs2021, yoffs2022, yoffs2023)
+final_list = rbindlist(the_list)
+final_df = final_list |>
+  filter(situation == "4on5")  |>
+  filter(position != "D") |>
+  group_by(season, team) |>
+  select(c(season, games_played, team, name,icetime,faceoffsWon, faceoffsLost)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+  filter(icetime != 0) 
+final_df$season = final_df$season + 1
+```
+```{r}
+# adding in Stanley Cup winners
+winners = data.frame(season = as.double(2010:2024), winner = c("CHI", "BOS", "L.A", "CHI", "L.A", "CHI", "PIT", "PIT", "WSH", "STL", "T.B", "T.B", "COL", "VGK", "FLA"))
+```
+
+```{r}
+the_list = list(yoffs2009,yoffs2010, yoffs2011, yoffs2012, yoffs2013, yoffs2014, yoffs2015, yoffs2016, yoffs2017, yoffs2018, yoffs2019, yoffs2020, yoffs2021, yoffs2022, yoffs2023)
+final_list = rbindlist(the_list)
+adv_stats = final_list |> 
+  filter(situation == "4on5")  |>
+  filter(position != "D") |>
+  filter(icetime != 0) |>
+  group_by(season, team) |>
+  mutate(total_time = sum(icetime)) |>
+  mutate(ice_share = (icetime/total_time)*100) |>
+  mutate(toi_game = icetime/games_played) |>
+  mutate(fo_total = faceoffsWon + faceoffsLost) |>
+  mutate(fo_perc = faceoffsWon/fo_total) |>
+  filter(games_played >= 4) |>
+  select(c(season, team, position, name, icetime,toi_game, fo_perc, fo_total,  OnIce_A_xGoals, OnIce_A_goals, OnIce_A_flurryAdjustedxGoals, OnIce_A_highDangerShots, OnIce_A_unblockedShotAttempts, ice_share, I_F_takeaways, shotsBlockedByPlayer, games_played)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+    mutate(goals_against_above_ex = OnIce_A_xGoals - OnIce_A_goals) |>
+  mutate(shots_per_toi = OnIce_A_unblockedShotAttempts/ icetime) |>
+  filter(icetime >= 60) |>
+  ungroup()
+adv_stats$season = adv_stats$season + 1
+adv_stats = adv_stats |>
+  left_join(winners, join_by(season)) |>
+  mutate(won_cup = ifelse(team == winner, TRUE, FALSE))
+```
+
+```{r}
+adv_stats |>
+  filter(toi_game >= 80) |>
+  mutate(goals_against_toi = OnIce_A_goals / icetime) |>
+  mutate(icetime_min = as.double(icetime / 60)) |>
+  mutate(shots_against_toi_min = OnIce_A_unblockedShotAttempts/ icetime_min) |>
+  arrange(shots_against_toi_min) |>
+  select(c(season,team,name,shots_against_toi_min))
+```
+
+
+## actual metric creation
+```{r}
+center_coeff = adv_stats |>
+  filter(position == "C") |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  select(c(season,name,team, coefficient, position, won_cup)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+
+```{r}
+plotly::ggplotly(ggplot(center_coeff, aes(x = season, y = coefficient, text = paste(name, "<br>", team, "<br>","PK Score", coefficient, "<br>", "Won Cup:", won_cup))) + geom_point() + scale_x_continuous(breaks = 2010:2024) + ylim(min = -2,max = 20) + labs(title = "Shorthanded Coefficients of Centers in the Playoffs from 2010-2024"), tooltip = "text")
+```
+```{r}
+knitr::kable(center_coeff, col.names = c("Season", "Player", "Team", "SH Coefficient", "Position", "Won Cup?") )
+```
+```{r}
+knitr::kable(winger_coeff, col.names = c("Season", "Player", "Team", "SH Coefficient", "Position", "Won Cup?") )
+```
+
+
+```{r}
+winger_coeff = adv_stats |>
+  filter(position != "C") |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  select(c(season,name,team, coefficient, position, won_cup)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+x = rbind(1,first_coeff$coefficient)
+hist(first_coeff$coefficient, breaks = 12, probability = TRUE) 
+curve(dchisq(x,df = 4), from = min(x), to = max(x), n = nrow(first_coeff)- 1, add = TRUE, col = "red")
+```
+
+
+```{r}
+adv_stats |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +    + shotsBlockedByPlayer))*ice_share))/games_played) |> ## very important
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+Dmen = final_list |>
+  filter(situation == "4on5")  |>
+  filter(position == "D") |>
+  filter(icetime != 0) |>
+  group_by(season, team) |>
+  mutate(total_time = sum(icetime)) |>
+  mutate(ice_share = (icetime/total_time)*100) |>
+  mutate(toi_game = icetime/games_played) |>
+  filter(games_played >= 4) |>
+  select(c(season, team, position, name, icetime,toi_game,  OnIce_A_xGoals, OnIce_A_goals, OnIce_A_flurryAdjustedxGoals, OnIce_A_highDangerShots, OnIce_A_unblockedShotAttempts, ice_share, I_F_takeaways, shotsBlockedByPlayer, games_played)) |> ##defensive stats(on ice against stats)
+    mutate(goals_against_above_ex = OnIce_A_xGoals - OnIce_A_goals) |>
+  mutate(shots_per_toi = OnIce_A_unblockedShotAttempts/ icetime) |>
+  filter(icetime >= 60) |>
+  ungroup()
+Dmen$season = Dmen$season + 1
+Dmen = Dmen |>
+  left_join(winners, join_by(season)) |>
+  mutate(won_cup = ifelse(team == winner, TRUE, FALSE))
+dmen_coeff = Dmen |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  select(c(season,name,team, coefficient, position, won_cup)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+everyone = final_list |>
+  filter(situation == "4on5")  |>
+  filter(icetime != 0) |>
+  group_by(season, team) |>
+  mutate(total_time = sum(icetime)) |>
+  mutate(ice_share = (icetime/total_time)*100) |>
+  mutate(toi_game = icetime/games_played) |>
+  filter(games_played >= 4) |>
+  select(c(season, team, position, name, icetime,toi_game,  OnIce_A_xGoals, OnIce_A_goals, OnIce_A_flurryAdjustedxGoals, OnIce_A_highDangerShots, OnIce_A_unblockedShotAttempts, ice_share, I_F_takeaways, shotsBlockedByPlayer, games_played)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+    mutate(goals_against_above_ex = OnIce_A_xGoals - OnIce_A_goals) |>
+  mutate(shots_per_toi = OnIce_A_unblockedShotAttempts/ icetime) |>
+  filter(icetime >= 60) |>
+  ungroup()
+everyone$season = everyone$season + 1
+everyone = everyone |>
+  left_join(winners, join_by(season)) |>
+  mutate(won_cup = ifelse(team == winner, TRUE, FALSE))
+every_coeff = everyone |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  select(c(season,name,team, coefficient, position, won_cup)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+visuals = every_coeff |>
+ group_by(team,season) |>
+ summarise(team_avg = mean(coefficient)) |>
+ arrange(desc(team_avg))
+visuals = visuals |>
+  mutate(team = str_replace(team, "S\\.J", "SJS")) |>
+  mutate(team = str_replace(team, "N\\.J", "NJD")) |>
+  mutate(team = str_replace(team, "L\\.A", "LAK")) |>
+  mutate(team = str_replace(team, "T\\.B", "TBL"))  |>
+  mutate(abbreviation = team)
+```
+
+
+```{r}
+plotly::ggplotly(ggplot(visuals, aes(x = season, y = team_avg, color = team)) + geom_point())
+```
+
+## find a way to get wins in here
+```{r}
+team_info <- read.csv("~/Downloads/team_info.csv")
+teams = team_info |>
+  select(team_id, abbreviation)
+
+games = read.csv("~/Downloads/game_2.csv")
+clean_games = games |>
+  mutate(season = str_extract(season, ".{4}$")) |>
+  mutate(team_id = ifelse(home_goals > away_goals, home_team_id, away_team_id)) |>
+  distinct(game_id, .keep_all = TRUE) |>
+  select(season, type, away_team_id, home_team_id, venue, team_id)
+```
+
+```{r}
+nhl_data = inner_join(clean_games, teams, by = "team_id")
+playoff_wins = nhl_data |>
+  filter(type == "R") |>
+  mutate(season = as.integer(season)) |>
+  filter(season >= 2010) |>
+  group_by(abbreviation, season) |>
+  summarise(wins = n())
+```
+
+```{r}
+wins_total = inner_join(visuals, playoff_wins, by = c("abbreviation", "season"))
+wins_total = wins_total |>
+  select(team, season, team_avg, wins)
+```
+
+```{r}
+plotly::ggplotly(ggplot(wins_total, aes(x = wins, y = team_avg, color = team, text = paste("Team:", team, "<br>Team Avg PKEM:", round(team_avg,3),"<br>Wins:", wins, "<br>Season:", season))) + geom_point(), tooltip = "text")
+```
+
+```{r}
+cor(wins_total$team_avg,wins_total$wins)
+```
+
+
+
+
+```{r}
+every_avg_coeff = every_coeff |>
+  group_by(team, season) |>
+  mutate(team_avg_coeff = mean(coefficient)) 
+won_cup = rpart(won_cup ~ team_avg_coeff,every_avg_coeff,method = "class", maxdepth = 5)
+rpart.plot(won_cup)
+```
+
+```{r}
+pred = predict(won_cup, every_avg_coeff, type = "class") 
+actual = as.factor(every_avg_coeff$won_cup)
+confusion = confusionMatrix(pred, actual)
+confusion$table
+confusion$overall["Accuracy"]
+```
+
+
+```{r}
+knitr::kable(dmen_coeff)
+```
+
+```{r}
+plotly::ggplotly(ggplot(dmen_coeff, aes(x = season, y = coefficient)) + geom_point() + ylim(min = 10, max = 24))
+```
+
+```{r}
+hist(dmen_coeff$coefficient, prob = TRUE)
+curve(dchisq(x,df = 4), from = min(x), to = max(x), n = nrow(dmen_coeff), add = TRUE, col = "red")
+```
+
+```{r}
+Dmen_total = Dmen |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer)))*ice_share/games_played)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+Dmen_total |>
+  mutate(pre_adjust = ((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer)) |>
+  select(c(name, ice_share, games_played, pre_adjust, coefficient))
+```
+
+## Regular Season Creation and Cleaning
+```{r}
+the_reg_list = list(Reg2008, Reg2009, Reg2010, Reg2011, Reg2012, Reg2013, Reg2014, Reg2015, Reg2016, Reg2017, Reg2018, Reg2019, Reg2020, Reg2021, Reg2022, Reg2023)
+final_reg_list = rbindlist(the_reg_list)
+adv_stats_reg = final_reg_list |> 
+  filter(situation == "4on5")  |>
+  filter(position != "D") |>
+  filter(icetime != 0) |>
+  group_by(season, team) |>
+  mutate(total_time = sum(icetime)) |>
+  mutate(ice_share = (icetime/total_time)*100) |>
+  mutate(toi_game = icetime/games_played) |>
+  mutate(fo_total = faceoffsWon + faceoffsLost) |>
+  mutate(fo_perc = faceoffsWon/fo_total) |>
+  filter(games_played >= 10) |>
+  select(c(season, team, position, name, icetime,toi_game, fo_perc, fo_total,  OnIce_A_xGoals, OnIce_A_goals, OnIce_A_flurryAdjustedxGoals, OnIce_A_highDangerShots, OnIce_A_unblockedShotAttempts, ice_share, I_F_takeaways, shotsBlockedByPlayer, games_played)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+    mutate(goals_against_above_ex = OnIce_A_xGoals - OnIce_A_goals) |>
+  mutate(shots_per_toi = OnIce_A_unblockedShotAttempts/ icetime) |>
+  filter(icetime >= 60) |>
+  ungroup()
+forward_coeff = adv_stats_reg |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  select(c(season,name,team, coefficient, position)) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+```{r}
+the_reg_def_list = list(Reg2008, Reg2009, Reg2010, Reg2011, Reg2012, Reg2013, Reg2014, Reg2015, Reg2016, Reg2017, Reg2018, Reg2019, Reg2020, Reg2021, Reg2022, Reg2023)
+final_reg_def_list = rbindlist(the_reg_def_list)
+adv_stats_reg_def = final_reg_def_list |> 
+  filter(situation == "4on5")  |>
+  filter(position == "D") |>
+  filter(icetime != 0) |>
+  group_by(season, team) |>
+  mutate(total_time = sum(icetime)) |>
+  mutate(ice_share = (icetime/total_time)*100) |>
+  mutate(toi_game = icetime/games_played) |>
+  filter(games_played >= 10) |>
+  select(c(season, team, position, name, icetime,toi_game,  OnIce_A_xGoals, OnIce_A_goals, OnIce_A_flurryAdjustedxGoals, OnIce_A_highDangerShots, OnIce_A_unblockedShotAttempts, ice_share, I_F_takeaways, shotsBlockedByPlayer, games_played)) |> ##defensive stats(on ice against stats), maybe shift stats(where start, defensive zone), faceoff stats
+    mutate(goals_against_above_ex = OnIce_A_xGoals - OnIce_A_goals) |>
+  mutate(shots_per_toi = OnIce_A_unblockedShotAttempts/ icetime) |>
+  filter(icetime >= 60) |>
+  ungroup()
+defense_coeff = adv_stats_reg_def |>
+  mutate(coefficient = (((((OnIce_A_flurryAdjustedxGoals - OnIce_A_goals) /  OnIce_A_unblockedShotAttempts) + (I_F_takeaways +  shotsBlockedByPlayer))*ice_share))/games_played) |>
+  arrange(desc(coefficient)) |>
+  filter(is.na(coefficient) == FALSE)
+```
+
+
+```{r}
+defense_coeff |>
+  group_by(season) |>
+  mutate(med = median(coefficient)) |>
+  mutate(iqr = IQR(coefficient)) |>
+  mutate(PK_plus = (coefficient - med)/ (1.5 * iqr)) |> 
+  ungroup() |>
+  arrange(desc(PK_plus))
+```
+
+## Classification
+
+```{r}
+true_false = defense_coeff |>
+  group_by(season) |>
+  mutate(is_top5 = coefficient >= quantile(coefficient, 0.95))
+```
+
+
+```{r}
+avg_coeff = dmen_coeff |>
+  group_by(team, season) |>
+  mutate(team_avg_coeff = mean(coefficient)) 
+won_cup = rpart(won_cup ~ team_avg_coeff,avg_coeff,method = "class", maxdepth = 5)
+rpart.plot(won_cup)
+```
+
+
+```{r}
+avg_coeff = dmen_coeff |>
+  group_by(team, season) |>
+  mutate(team_avg_coeff = mean(coefficient)) 
+won_cup = rpart(won_cup ~ team_avg_coeff,avg_coeff,method = "class", maxdepth = 3)
+rpart.plot(won_cup)
+```
+
+```{r}
+pred = predict(won_cup, avg_coeff, type = "class") 
+actual = as.factor(avg_coeff$won_cup)
+confusion = confusionMatrix(pred, actual)
+confusion$table
+confusion$overall["Accuracy"]
+```
