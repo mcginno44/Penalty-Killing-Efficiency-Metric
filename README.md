@@ -4,6 +4,8 @@ This project entails my creation of an original Penalty Kill Efficiency Metric (
 
 PKEM = (((flurryAdjustedxGoalsAgainst - GoalsAgainst) /  OnIceUnblockedShotAttemptsAgainst) + (takeawaysByPlayer + shotsBlockedByPlayer) * (playerIceTime/total_team_shorthanded_time)*100 ) / games_played)
 
+Essentially, a higher score indicates a greater positive impact on penalty-killing. A player will have to have high rates of goals against expected, combined takeaways and blocks across a large share of short-handed ice time. 
+
 Methodology-
 1. Feature Engineering
    - Time on ice (shorthanded)
